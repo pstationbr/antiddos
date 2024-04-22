@@ -1,29 +1,48 @@
 import socket
+import struct
+import threading
 
-def anti_ddos():
-    # Configurações do servidor
-    HOST = 'localhost'  # Endereço do servidor
-    PORT = 8000  # Porta do servidor
-    MAX_CONN = 100  # Número máximo de conexões simultâneas
+# Configuração inicial
+HOST = '0.0.0.0'
+PORT = 80
+THRESHOLD = 1000  # Número de pacotes por segundo para considerar um ataque DDoS
 
-    # Criação do socket
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+# Contador de pacotes
+packet_counts = {}
 
-    # Vincula o socket ao endereço e porta
-    server_socket.bind((HOST, PORT))
+# Bloqueio para sincronizar o acesso ao contador de pacotes
+lock = threading.Lock()
 
-    # Define o número máximo de conexões pendentes
-    server_socket.listen(MAX_CONN)
+def monitor_traffic():
+    global packet_counts
+    with socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(0x0003)) as s:
+        while True:
+            packet, _ = s.recvfrom(65565)
+            # Desempacota o pacote para obter o endereço IP de origem
+            ip_header = packet[14:34]
+            iph = struct.unpack('!BBHHHBBH4s4s', ip_header)
+            src_ip = socket.inet_ntoa(iph[8])
+            
+            # Atualiza o contador de pacotes
+            with lock:
+                if src_ip in packet_counts:
+                    packet_counts[src_ip] += 1
+                else:
+                    packet_counts[src_ip] = 1
 
-    print(f"Servidor anti-DDoS iniciado em {HOST}:{PORT}")
-
-    # Loop principal para aceitar conexões e lidar com elas
+def detect_ddos():
+    global packet_counts
     while True:
-        client_socket, addr = server_socket.accept()
-        print(f"Nova conexão recebida de {addr[0]}:{addr[1]}")
-        client_socket.send("Conexão estabelecida com sucesso!".encode())
-        client_socket.close()
+        with lock:
+            for src_ip, count in packet_counts.items():
+                if count > THRESHOLD:
+                    print(f"Detectado possível ataque DDoS de {src_ip}")
+            packet_counts = {}  # Reseta o contador
+        time.sleep(1)
 
-if __name__ == "__main__":
-    anti_ddos()
+# Inicia as threads de monitoramento e detecção
+traffic_thread = threading.Thread(target=monitor_traffic)
+ddos_thread = threading.Thread(target=detect_ddos)
+
+traffic_thread.start()
+ddos_thread.start()
